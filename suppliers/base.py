@@ -36,6 +36,10 @@ class BaseSupplier(ABC):
         """
         pass
 
+    async def get_balance(self) -> dict:
+        """Kiểm tra số dư ví trên nhà cung cấp (mặc định trả về N/A nếu sàn không hỗ trợ)"""
+        return {"success": True, "balance": 0.0, "balanceText": "N/A", "walletCurrency": "USD"}
+
     @staticmethod
     def calculate_price_and_profit(cost_price_vnd: int) -> tuple[int, int]:
         """

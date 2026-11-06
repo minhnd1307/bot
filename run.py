@@ -13,7 +13,7 @@ if sys.platform == "win32":
 
 from config import SERVER_HOST, SERVER_PORT, TELEGRAM_BOT_TOKEN, AUTO_SYNC_INTERVAL_MINUTES
 import database
-from bot import build_application, sync_supplier_catalog
+from bot import build_application, sync_supplier_catalog, setup_bot_commands
 from server import app as fastapi_app, set_bot_instance
 
 # Cấu hình logging
@@ -73,6 +73,7 @@ async def main():
     # 5. Chạy cả Telegram Bot Poller và Webhook Server đồng thời
     async with telegram_app:
         await telegram_app.start()
+        await setup_bot_commands(telegram_app.bot)
         await telegram_app.updater.start_polling(drop_pending_updates=True)
         logger.info(f"🚀 Telegram Bot đang lắng nghe tin nhắn...")
         logger.info(f"🌐 Webhook Server đang lắng nghe tại http://{SERVER_HOST}:{SERVER_PORT}")

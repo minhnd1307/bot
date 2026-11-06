@@ -384,3 +384,31 @@ class TelegramUserbotSupplier(BaseSupplier):
                 }
         except Exception as e:
             return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": f"Lỗi Userbot: {str(e)}"}
+
+    async def get_balance(self) -> dict:
+        """
+        Kiểm tra số dư ví USDT hiện tại trên SupremeLeaderShop thông qua REST API.
+        """
+        if self.api_key:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as http_client:
+                    resp = await http_client.get(
+                        f"{self.base_url}/api/telegram-buyer/balance",
+                        params={"key": self.api_key}
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        balance = float(data.get("balance", 0.0))
+                        currency = data.get("walletCurrency", "USDT")
+                        text = data.get("balanceText") or f"{balance:.2f} {currency}"
+                        return {
+                            "success": True,
+                            "balance": balance,
+                            "balanceText": text,
+                            "walletCurrency": currency
+                        }
+            except Exception as e:
+                logger.warning(f"Lỗi khi kiểm tra số dư ví SupremeLeader: {e}")
+
+        return {"success": False, "balance": 0.0, "balanceText": "0.00 USDT", "walletCurrency": "USDT"}
+

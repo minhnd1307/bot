@@ -216,3 +216,146 @@ async def get_statistics() -> dict:
             "total_profit": total_profit,
             "total_users": total_users
         }
+
+async def get_admin_detailed_stats() -> dict:
+    """Báo cáo thống kê toàn diện cho Admin: Toàn thời gian, Hôm nay, 7 ngày qua, Tỷ lệ đơn & Top bán chạy"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        # 1. Toàn thời gian (All-Time)
+        async with db.execute("""
+            SELECT
+                COUNT(*) as total_orders,
+                SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed_orders,
+                SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending_orders,
+                SUM(CASE WHEN status LIKE 'FAILED%' THEN 1 ELSE 0 END) as failed_orders,
+                COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN sell_price_vnd ELSE 0 END), 0) as total_revenue,
+                COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN profit_vnd ELSE 0 END), 0) as total_profit
+            FROM orders
+        """) as c:
+            row = await c.fetchone()
+            all_time = {
+                "total_orders": row[0] or 0,
+                "completed": row[1] or 0,
+                "pending": row[2] or 0,
+                "failed": row[3] or 0,
+                "revenue": row[4] or 0,
+                "profit": row[5] or 0,
+            }
+
+        # 2. Hôm nay (Dựa vào giờ địa phương)
+        async with db.execute("""
+            SELECT
+                COUNT(*) as today_orders,
+                SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed,
+                COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN sell_price_vnd ELSE 0 END), 0) as revenue,
+                COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN profit_vnd ELSE 0 END), 0) as profit
+            FROM orders
+            WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime')
+               OR DATE(paid_at, 'localtime') = DATE('now', 'localtime')
+        """) as c:
+            row = await c.fetchone()
+            today = {
+                "total": row[0] or 0,
+                "completed": row[1] or 0,
+                "revenue": row[2] or 0,
+                "profit": row[3] or 0,
+            }
+
+        # 3. 7 ngày gần nhất
+        async with db.execute("""
+            SELECT
+                COUNT(*) as week_orders,
+                SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed,
+                COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN sell_price_vnd ELSE 0 END), 0) as revenue,
+                COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN profit_vnd ELSE 0 END), 0) as profit
+            FROM orders
+            WHERE created_at >= DATETIME('now', '-7 days')
+               OR paid_at >= DATETIME('now', '-7 days')
+        """) as c:
+            row = await c.fetchone()
+            last_7_days = {
+                "total": row[0] or 0,
+                "completed": row[1] or 0,
+                "revenue": row[2] or 0,
+                "profit": row[3] or 0,
+            }
+
+        # 4. Người dùng & Khách mua hàng thực tế
+        async with db.execute("SELECT COUNT(*) FROM users") as c:
+            total_users = (await c.fetchone())[0] or 0
+        async with db.execute("SELECT COUNT(DISTINCT user_id) FROM orders WHERE status = 'COMPLETED'") as c:
+            active_buyers = (await c.fetchone())[0] or 0
+
+        # 5. Top 3 sản phẩm bán chạy nhất
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT product_name, COUNT(*) as count, SUM(profit_vnd) as sum_profit
+            FROM orders
+            WHERE status = 'COMPLETED'
+            GROUP BY product_name
+            ORDER BY count DESC
+            LIMIT 3
+        """) as c:
+            rows = await c.fetchall()
+            top_products = [dict(r) for r in rows]
+
+        return {
+            "all_time": all_time,
+            "today": today,
+            "last_7_days": last_7_days,
+            "total_users": total_users,
+            "active_buyers": active_buyers,
+            "top_products": top_products
+        }
+
+async def get_all_orders_admin(limit: int = 6, offset: int = 0) -> list[dict]:
+    """Lấy danh sách đơn hàng toàn shop kèm tên khách hàng cho Admin"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT o.*, u.username, u.full_name
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.user_id
+            ORDER BY o.created_at DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+async def count_all_orders() -> int:
+    """Đếm tổng số đơn hàng trong toàn bộ hệ thống"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM orders") as cursor:
+            return (await cursor.fetchone())[0] or 0
+
+async def get_order_detail_full(order_code: str) -> dict | None:
+    """Lấy đầy đủ chi tiết đơn hàng: tài khoản đã giao, log lỗi, giao dịch ngân hàng"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT o.*, u.username, u.full_name, t.gateway, t.content as bank_content, t.created_at as trans_time
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.user_id
+            LEFT JOIN transactions t ON o.order_code = t.order_code
+            WHERE o.order_code = ?
+        """, (order_code,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def search_orders_admin(keyword: str, limit: int = 5) -> list[dict]:
+    """Tìm kiếm đơn hàng theo mã đơn, username hoặc ID khách hàng"""
+    clean_kw = keyword.strip().lstrip("#")
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT o.*, u.username, u.full_name
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.user_id
+            WHERE o.order_code LIKE ?
+               OR CAST(o.user_id AS TEXT) LIKE ?
+               OR u.username LIKE ?
+            ORDER BY o.created_at DESC
+            LIMIT ?
+        """, (f"%{clean_kw}%", f"%{clean_kw}%", f"%{clean_kw}%", limit)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+

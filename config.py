@@ -8,6 +8,8 @@ load_dotenv()
 # ================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "")
+SUPPORT_TELEGRAM = os.getenv("SUPPORT_TELEGRAM", "")
 
 # ================================
 # BUSINESS CONFIG
