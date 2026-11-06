@@ -91,14 +91,7 @@ class TelegramUserbotSupplier(BaseSupplier):
                                 cost_price_vnd = int(price_usd * USD_TO_VND_RATE)
                                 sell_price_vnd, profit_vnd = self.calculate_price_and_profit(cost_price_vnd)
 
-                                formatted_desc = (
-                                    f"📦 Gói: {p_name}\n"
-                                    f"• Giá gốc: ${price_usd:.2f} (~{cost_price_vnd:,} VNĐ)\n"
-                                    f"• Tồn kho thực tế: {stock} tài khoản sẵn có\n"
-                                    f"• Bảo hành: Tự động đổi mới 1-1\n"
-                                    f"━━━━━━━━━━━━━━━━━━\n"
-                                    f"{desc[:300]}..." if len(desc) > 300 else desc
-                                )
+                                formatted_desc = desc if desc else "Tài khoản bản quyền chính hãng, tự động bàn giao qua tin nhắn sau khi thanh toán."
 
                                 products.append({
                                     "id": p_id,
@@ -187,7 +180,7 @@ class TelegramUserbotSupplier(BaseSupplier):
                                         "supplier_id": data_str,
                                         "name": raw_name,
                                         "category": self._categorize(raw_name),
-                                        "description": f"Gói dịch vụ chính hãng từ bot nguồn @{self.target_bot}. Trạng thái: {stock_str}.",
+                                        "description": f"Gói dịch vụ chính hãng, giao nhận tự động qua tin nhắn. Trạng thái: {stock_str}.",
                                         "cost_price_vnd": cost_price_vnd,
                                         "sell_price_vnd": sell_price_vnd,
                                         "profit_vnd": profit_vnd,
@@ -225,7 +218,7 @@ class TelegramUserbotSupplier(BaseSupplier):
                 "supplier_id": item["id"],
                 "name": item["name"],
                 "category": item["category"],
-                "description": f"Gói dịch vụ {item['name']} tự động từ bot nguồn @{self.target_bot}.",
+                "description": f"Gói dịch vụ {item['name']} chính hãng, nhận tài khoản tự động qua tin nhắn sau khi thanh toán.",
                 "cost_price_vnd": item["cost_price_vnd"],
                 "sell_price_vnd": sell_price,
                 "profit_vnd": profit,
