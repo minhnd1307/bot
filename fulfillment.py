@@ -27,11 +27,12 @@ async def fulfill_order(order_code: str, bot=None) -> dict:
 
     # Gọi API nhà cung cấp
     supplier = get_supplier()
-    logger.info(f"Đang gọi nhà cung cấp ({supplier.__class__.__name__}) cho đơn {order_code}...")
+    qty = order.get("quantity") or 1
+    logger.info(f"Đang gọi nhà cung cấp ({supplier.__class__.__name__}) cho đơn {order_code} (Số lượng: {qty})...")
 
     purchase_result = await supplier.buy_product(
         product_id=order["product_id"],
-        custom_data={"order_code": order_code}
+        custom_data={"order_code": order_code, "quantity": qty}
     )
 
     if purchase_result.get("success"):
@@ -44,7 +45,8 @@ async def fulfill_order(order_code: str, bot=None) -> dict:
                 user_msg = (
                     f"🎉 **ĐƠN HÀNG THÀNH CÔNG!**\n"
                     f"Mã đơn hàng: `{order_code}`\n"
-                    f"Sản phẩm: **{order['product_name']}**\n\n"
+                    f"Sản phẩm: **{order['product_name']}**\n"
+                    f"Số lượng: `{qty}` tài khoản\n\n"
                     f"{delivered_data}\n\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"🙏 Cảm ơn bạn đã ủng hộ shop!\n"
@@ -67,7 +69,7 @@ async def fulfill_order(order_code: str, bot=None) -> dict:
                         f"━━━━━━━━━━━━━━━━━━\n"
                         f"🆔 Mã đơn: `{order_code}`\n"
                         f"👤 Khách hàng ID: `{order['user_id']}`\n"
-                        f"📦 Sản phẩm: **{order['product_name']}**\n"
+                        f"📦 Sản phẩm: **{order['product_name']}** (x{qty})\n"
                         f"💵 Khách trả: `{order['sell_price_vnd']:,} VNĐ`\n"
                         f"🏷️ Giá vốn nguồn: `{order['cost_price_vnd']:,} VNĐ`\n"
                         f"📈 **Lợi nhuận ròng (+20%): `+{order['profit_vnd']:,} VNĐ`**\n"

@@ -167,8 +167,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         buttons = []
         for p in products:
-            btn_text = f"{p['name']} — {p['sell_price_vnd']:,}đ"
-            buttons.append([InlineKeyboardButton(btn_text, callback_data=f"prod_{p['id']}")])
+            stock = int(p.get("stock_count", 0))
+            if stock > 0:
+                stock_badge = f"📦 {stock}"
+                btn_text = f"{p['name'][:22]} ({stock_badge}) — {p['sell_price_vnd']:,}đ"
+            else:
+                stock_badge = "❌ Hết"
+                btn_text = f"{p['name'][:22]} ({stock_badge}) — {p['sell_price_vnd']:,}đ"
+            buttons.append([InlineKeyboardButton(btn_text, callback_data=f"prod_{p['id']}_1")])
         buttons.append([InlineKeyboardButton("🔙 Quay lại Danh mục", callback_data="menu_categories")])
 
         await query.message.edit_text(
@@ -177,37 +183,132 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    # 4. Xem chi tiết sản phẩm
+    # 4. Xem chi tiết sản phẩm (hỗ trợ chọn số lượng)
     elif data.startswith("prod_"):
-        prod_id = data.replace("prod_", "")
+        raw = data.replace("prod_", "")
+        if "_" in raw:
+            parts = raw.rsplit("_", 1)
+            if parts[1].isdigit():
+                prod_id = parts[0]
+                qty = max(1, int(parts[1]))
+            else:
+                prod_id = raw
+                qty = 1
+        else:
+            prod_id = raw
+            qty = 1
+
         product = await database.get_product(prod_id)
         if not product:
             await query.message.edit_text("❌ Không tìm thấy sản phẩm này!")
             return
 
+        stock = int(product.get("stock_count", 0))
+        unit_price = product["sell_price_vnd"]
+
+        # Nếu số lượng vượt quá tồn kho hiện có thì giới hạn lại
+        if stock > 0 and qty > stock:
+            qty = stock
+
+        total_price = unit_price * qty
+
+        if stock > 0:
+            stock_badge = f"📦 **Tồn kho hiện có:** `{stock}` tài khoản sẵn có"
+        else:
+            stock_badge = "🔴 **Tình trạng:** `Tạm hết hàng trong kho nguồn`"
+
         detail_text = (
             f"📦 **{product['name']}**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"📝 **Mô tả:** {product['description']}\n\n"
-            f"💰 **Giá bán:** `{product['sell_price_vnd']:,} VNĐ`\n"
+            f"{stock_badge}\n"
+            f"💰 **Đơn giá:** `{unit_price:,} VNĐ / 1 tài khoản`\n"
+        )
+
+        if stock > 0:
+            detail_text += (
+                f"🔢 **Số lượng chọn:** `{qty}` tài khoản\n"
+                f"💳 **Tổng thanh toán:** `{total_price:,} VNĐ`\n"
+            )
+
+        detail_text += (
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📝 **Mô tả chi tiết:**\n{product['description']}\n\n"
             f"🛡️ **Bảo hành:** 1 đổi 1 tự động\n"
             f"⚡ **Giao nhận:** Tự động qua tin nhắn ngay sau khi thanh toán\n"
             f"━━━━━━━━━━━━━━━━━━"
         )
 
-        buttons = [
-            [InlineKeyboardButton("⚡ MUA NGAY (Tạo mã VietQR)", callback_data=f"buy_{product['id']}")],
-            [InlineKeyboardButton("🔙 Quay lại", callback_data=f"cat_{product['category']}")]
-        ]
-        await query.message.edit_text(detail_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        buttons = []
+        if stock <= 0:
+            buttons.append([InlineKeyboardButton("⚠️ Tạm Hết Hàng (Vui lòng chọn gói khác)", callback_data="noop")])
+        else:
+            # Hàng 1: Nút điều chỉnh số lượng [-] [ Số lượng: X ] [+]
+            prev_qty = max(1, qty - 1)
+            next_qty = min(stock, qty + 1)
+
+            minus_cb = f"prod_{prod_id}_{prev_qty}" if qty > 1 else "noop"
+            plus_cb = f"prod_{prod_id}_{next_qty}" if qty < stock else "noop"
+
+            buttons.append([
+                InlineKeyboardButton("➖ 1", callback_data=minus_cb),
+                InlineKeyboardButton(f"🔢 SL: {qty}", callback_data="noop"),
+                InlineKeyboardButton("➕ 1", callback_data=plus_cb)
+            ])
+
+            # Hàng 2: Nút chọn nhanh (1x, 2x, 3x, 5x, 10x) nếu kho còn nhiều
+            if stock >= 2:
+                quick_row = []
+                for q in [1, 2, 3, 5, 10]:
+                    if q <= stock:
+                        label = f"✓ {q}x" if q == qty else f"{q}x"
+                        quick_row.append(InlineKeyboardButton(label, callback_data=f"prod_{prod_id}_{q}"))
+                if quick_row:
+                    buttons.append(quick_row)
+
+            # Hàng 3: Nút MUA NGAY với tổng tiền
+            btn_buy_text = f"⚡ MUA NGAY ({qty}x • {total_price:,}đ)"
+            buttons.append([InlineKeyboardButton(btn_buy_text, callback_data=f"buy_{prod_id}_{qty}")])
+
+        buttons.append([InlineKeyboardButton("🔙 Quay lại Danh mục", callback_data=f"cat_{product['category']}")])
+
+        try:
+            await query.message.edit_text(detail_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.error(f"Lỗi hiển thị chi tiết sản phẩm: {e}")
 
     # 5. Bấm MUA NGAY -> Tạo đơn hàng & xuất mã VietQR
     elif data.startswith("buy_"):
-        prod_id = data.replace("buy_", "")
+        raw = data.replace("buy_", "")
+        if "_" in raw:
+            parts = raw.rsplit("_", 1)
+            if parts[1].isdigit():
+                prod_id = parts[0]
+                qty = max(1, int(parts[1]))
+            else:
+                prod_id = raw
+                qty = 1
+        else:
+            prod_id = raw
+            qty = 1
+
         product = await database.get_product(prod_id)
         if not product:
             await query.message.edit_text("❌ Không tìm thấy sản phẩm!")
             return
+
+        stock = int(product.get("stock_count", 0))
+        if stock <= 0:
+            await query.answer("❌ Sản phẩm này hiện đang tạm hết hàng trong kho nguồn!", show_alert=True)
+            return
+
+        if qty > stock:
+            await query.answer(f"⚠️ Kho chỉ còn {stock} sản phẩm. Đã tự điều chỉnh!", show_alert=True)
+            qty = stock
+
+        total_cost = product["cost_price_vnd"] * qty
+        total_sell = product["sell_price_vnd"] * qty
+        total_profit = product["profit_vnd"] * qty
 
         # Tạo mã đơn ngẫu nhiên 6 chữ số: DH123456
         order_code = f"DH{random.randint(100000, 999999)}"
@@ -217,25 +318,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id=user_id,
             product_id=product["id"],
             product_name=product["name"],
-            cost_price=product["cost_price_vnd"],
-            sell_price=product["sell_price_vnd"],
-            profit=product["profit_vnd"]
+            cost_price=total_cost,
+            sell_price=total_sell,
+            profit=total_profit,
+            quantity=qty
         )
 
-        # Sinh ảnh QR VietQR chuẩn PNG dạng bytes (SePay online hoặc EMVCo offline)
-        qr_bytes = await get_vietqr_image_bytes(amount=product["sell_price_vnd"], order_code=order_code)
+        # Sinh ảnh QR VietQR chuẩn PNG dạng bytes (tổng tiền = total_sell)
+        qr_bytes = await get_vietqr_image_bytes(amount=total_sell, order_code=order_code)
 
         invoice_text = (
             f"🧾 **HÓA ĐƠN ĐẶT HÀNG #{order_code}**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"📦 Sản phẩm: **{product['name']}**\n"
-            f"💰 Số tiền cần thanh toán: `{product['sell_price_vnd']:,} VNĐ`\n"
+            f"🔢 Số lượng: `{qty}` tài khoản\n"
+            f"💰 Đơn giá: `{product['sell_price_vnd']:,} VNĐ / tài khoản`\n"
+            f"💳 **Tổng số tiền thanh toán: `{total_sell:,} VNĐ`**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🏦 **THÔNG TIN CHUYỂN KHOẢN (VIETQR TỰ ĐỘNG):**\n"
             f"• Ngân hàng: **{BANK_ID}**\n"
             f"• Số tài khoản: `{BANK_ACCOUNT_NO}`\n"
             f"• Tên chủ tài khoản: **{BANK_ACCOUNT_NAME}**\n"
-            f"• Số tiền: `{product['sell_price_vnd']:,}` VNĐ\n"
+            f"• Số tiền: `{total_sell:,}` VNĐ\n"
             f"• Nội dung chuyển khoản: `{order_code}`  *(BẮT BUỘC)*\n\n"
             f"⚠️ **LƯU Ý QUAN TRỌNG:**\n"
             f"1. Vui lòng chuyển **ĐÚNG SỐ TIỀN** và **ĐÚNG NỘI DUNG** `{order_code}`.\n"
@@ -320,10 +424,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "📦 **LỊCH SỬ 5 ĐƠN HÀNG GẦN NHẤT CỦA BẠN:**\n\n"
         for o in orders:
             status_icon = "✅" if o["status"] == "COMPLETED" else "⏳" if o["status"] == "PENDING" else "❌"
+            qty = o.get("quantity") or 1
             msg += (
                 f"{status_icon} **Đơn #{o['order_code']}** — {o['product_name']}\n"
+                f"• Số lượng: `{qty}` tài khoản\n"
                 f"• Trạng thái: `{o['status']}`\n"
-                f"• Giá tiền: `{o['sell_price_vnd']:,} đ`\n"
+                f"• Tổng tiền: `{o['sell_price_vnd']:,} đ`\n"
                 f"• Thời gian: `{o['created_at']}`\n"
             )
             if o["status"] == "COMPLETED" and o["delivered_data"]:
@@ -447,8 +553,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for o in orders:
             status_icon = "✅" if o["status"] == "COMPLETED" else "⏳" if o["status"] == "PENDING" else "❌"
             user_label = f"@{o['username']}" if o.get("username") else (o.get("full_name") or f"ID:{o['user_id']}")
+            qty = o.get("quantity") or 1
             msg += (
-                f"{status_icon} **#{o['order_code']}** — {o['product_name'][:28]}\n"
+                f"{status_icon} **#{o['order_code']}** — {o['product_name'][:26]} (x{qty})\n"
                 f"• Khách: {user_label} (ID: `{o['user_id']}`)\n"
                 f"• Tiền thu: `{o['sell_price_vnd']:,}đ` | Lãi: `+{o['profit_vnd']:,}đ`\n"
                 f"• Giờ tạo: `{o['created_at']}` | TT: `{o['status']}`\n"
@@ -478,11 +585,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_emoji = "✅" if order["status"] == "COMPLETED" else "⏳" if order["status"] == "PENDING" else "❌"
         user_label = f"@{order['username']}" if order.get("username") else (order.get("full_name") or "Khách hàng")
 
+        qty = order.get("quantity") or 1
         detail_text = (
             f"📦 **CHI TIẾT ĐƠN HÀNG #{order['order_code']}**\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"• Trạng thái: {status_emoji} `{order['status']}`\n"
-            f"• Sản phẩm: **{order['product_name']}**\n"
+            f"• Sản phẩm: **{order['product_name']}** (x{qty})\n"
+            f"• Số lượng mua: `{qty}` tài khoản\n"
             f"• Mã SP nguồn: `{order['product_id']}`\n"
             f"• Khách mua: {user_label} (ID: `{order['user_id']}`)\n"
             f"• Giá vốn nhập: `{order['cost_price_vnd']:,} VNĐ`\n"
@@ -619,11 +728,13 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     status_emoji = "✅" if order["status"] == "COMPLETED" else "⏳" if order["status"] == "PENDING" else "❌"
+    qty = order.get("quantity") or 1
     msg = (
         f"📦 **THÔNG TIN ĐƠN HÀNG #{order['order_code']}**\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"• Trạng thái: {status_emoji} `{order['status']}`\n"
-        f"• Sản phẩm: **{order['product_name']}**\n"
+        f"• Sản phẩm: **{order['product_name']}** (x{qty})\n"
+        f"• Số lượng mua: `{qty}` tài khoản\n"
         f"• Số tiền thanh toán: `{order['sell_price_vnd']:,} VNĐ`\n"
         f"• Thời gian đặt: `{order['created_at']}`\n"
     )
@@ -663,8 +774,9 @@ async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for o in orders:
             status_icon = "✅" if o["status"] == "COMPLETED" else "⏳" if o["status"] == "PENDING" else "❌"
             user_label = f"@{o['username']}" if o.get("username") else (o.get("full_name") or f"ID:{o['user_id']}")
+            qty = o.get("quantity") or 1
             msg += (
-                f"{status_icon} **#{o['order_code']}** — {o['product_name'][:28]}\n"
+                f"{status_icon} **#{o['order_code']}** — {o['product_name'][:26]} (x{qty})\n"
                 f"• Khách: {user_label} (ID: `{o['user_id']}`)\n"
                 f"• Tiền thu: `{o['sell_price_vnd']:,}đ` | Lãi: `+{o['profit_vnd']:,}đ`\n"
                 f"• Giờ tạo: `{o['created_at']}` | TT: `{o['status']}`\n"
@@ -690,10 +802,12 @@ async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "📦 **LỊCH SỬ 5 ĐƠN HÀNG GẦN NHẤT CỦA BẠN:**\n\n"
         for o in orders:
             status_icon = "✅" if o["status"] == "COMPLETED" else "⏳" if o["status"] == "PENDING" else "❌"
+            qty = o.get("quantity") or 1
             msg += (
                 f"{status_icon} **Đơn #{o['order_code']}** — {o['product_name']}\n"
+                f"• Số lượng: `{qty}` tài khoản\n"
                 f"• Trạng thái: `{o['status']}`\n"
-                f"• Giá tiền: `{o['sell_price_vnd']:,} đ`\n"
+                f"• Tổng tiền: `{o['sell_price_vnd']:,} đ`\n"
                 f"• Thời gian: `{o['created_at']}`\n"
             )
             if o["status"] == "COMPLETED" and o["delivered_data"]:

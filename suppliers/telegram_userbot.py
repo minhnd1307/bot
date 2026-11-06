@@ -242,15 +242,16 @@ class TelegramUserbotSupplier(BaseSupplier):
         """
         # 1. Thử mua qua REST API
         if self.api_key:
+            qty = int((custom_data or {}).get("quantity", 1))
             try:
-                logger.info(f"Đang gửi yêu cầu mua sản phẩm '{product_id}' qua REST API...")
-                async with httpx.AsyncClient(timeout=20.0) as http_client:
+                logger.info(f"Đang gửi yêu cầu mua sản phẩm '{product_id}' (Số lượng: {qty}) qua REST API...")
+                async with httpx.AsyncClient(timeout=25.0) as http_client:
                     resp = await http_client.post(
                         f"{self.base_url}/api/telegram-buyer/purchase",
                         json={
                             "key": self.api_key,
                             "product_id": product_id,
-                            "quantity": 1,
+                            "quantity": qty,
                             "lang": "en"
                         }
                     )
@@ -258,6 +259,8 @@ class TelegramUserbotSupplier(BaseSupplier):
 
                     if resp.status_code == 200 and res_json.get("success"):
                         delivered = res_json.get("data") or res_json.get("delivered_data") or res_json.get("message") or str(res_json)
+                        if isinstance(delivered, list):
+                            delivered = "\n\n".join(str(item) for item in delivered)
                         return {
                             "success": True,
                             "delivered_data": (
@@ -275,7 +278,7 @@ class TelegramUserbotSupplier(BaseSupplier):
                             "success": False,
                             "delivered_data": "",
                             "cost_price_vnd": 0,
-                            "error": f"⚠️ Ví của bạn trên @{self.target_bot} đang có số dư 0.00 USDT. Vui lòng nạp tiền vào bot nguồn để xuất hàng!"
+                            "error": f"⚠️ Ví của bạn trên @{self.target_bot} không đủ số dư USDT để mua {qty} tài khoản. Vui lòng nạp thêm tiền vào bot nguồn!"
                         }
                     else:
                         err_msg = res_json.get("error") or resp.text

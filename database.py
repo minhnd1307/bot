@@ -28,6 +28,7 @@ async def init_db():
                 sell_price_vnd INTEGER NOT NULL,
                 profit_vnd INTEGER NOT NULL,
                 in_stock INTEGER DEFAULT 1,
+                stock_count INTEGER DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -41,6 +42,7 @@ async def init_db():
                 cost_price_vnd INTEGER NOT NULL,
                 sell_price_vnd INTEGER NOT NULL,
                 profit_vnd INTEGER NOT NULL,
+                quantity INTEGER DEFAULT 1,
                 status TEXT DEFAULT 'PENDING',
                 delivered_data TEXT,
                 error_message TEXT,
@@ -60,6 +62,18 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Tự động cập nhật cấu trúc bảng nếu database đã tồn tại từ trước (Migration)
+        try:
+            await db.execute("ALTER TABLE products ADD COLUMN stock_count INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE orders ADD COLUMN quantity INTEGER DEFAULT 1")
+        except Exception:
+            pass
+
         await db.commit()
     logger.info("Cơ sở dữ liệu SQLite đã được khởi tạo thành công.")
 
@@ -86,12 +100,14 @@ async def sync_products(products: list[dict]):
         await db.execute(f"DELETE FROM products WHERE id NOT IN ({placeholders})", product_ids)
 
         for p in products:
+            stock = int(p.get("stock_count", 0))
+            in_stock = 1 if (p.get("in_stock", True) and stock > 0) else 0
             await db.execute("""
                 INSERT INTO products (
                     id, supplier_id, name, category, description,
-                    cost_price_vnd, sell_price_vnd, profit_vnd, in_stock, updated_at
+                    cost_price_vnd, sell_price_vnd, profit_vnd, in_stock, stock_count, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(id) DO UPDATE SET
                     supplier_id=excluded.supplier_id,
                     name=excluded.name,
@@ -101,6 +117,7 @@ async def sync_products(products: list[dict]):
                     sell_price_vnd=excluded.sell_price_vnd,
                     profit_vnd=excluded.profit_vnd,
                     in_stock=excluded.in_stock,
+                    stock_count=excluded.stock_count,
                     updated_at=CURRENT_TIMESTAMP
             """, (
                 p["id"],
@@ -111,13 +128,14 @@ async def sync_products(products: list[dict]):
                 p["cost_price_vnd"],
                 p["sell_price_vnd"],
                 p["profit_vnd"],
-                1 if p.get("in_stock", True) else 0
+                in_stock,
+                stock
             ))
         await db.commit()
 
 async def get_categories() -> list[str]:
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute("SELECT DISTINCT category FROM products WHERE in_stock = 1") as cursor:
+        async with db.execute("SELECT DISTINCT category FROM products") as cursor:
             rows = await cursor.fetchall()
             return [r[0] for r in rows]
 
@@ -125,7 +143,7 @@ async def get_products_by_category(category: str) -> list[dict]:
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM products WHERE category = ? AND in_stock = 1", (category,)
+            "SELECT * FROM products WHERE category = ? ORDER BY in_stock DESC, name ASC", (category,)
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
@@ -144,15 +162,16 @@ async def create_order(
     product_name: str,
     cost_price: int,
     sell_price: int,
-    profit: int
+    profit: int,
+    quantity: int = 1
 ) -> bool:
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("""
             INSERT INTO orders (
                 order_code, user_id, product_id, product_name,
-                cost_price_vnd, sell_price_vnd, profit_vnd, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')
-        """, (order_code, user_id, product_id, product_name, cost_price, sell_price, profit))
+                cost_price_vnd, sell_price_vnd, profit_vnd, quantity, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+        """, (order_code, user_id, product_id, product_name, cost_price, sell_price, profit, quantity))
         await db.commit()
         return True
 
