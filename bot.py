@@ -16,7 +16,7 @@ from config import (
 )
 import database
 from suppliers import get_supplier
-from payments.vietqr import get_vietqr_image_url
+from payments.vietqr import get_vietqr_image_url, get_vietqr_image_bytes
 from fulfillment import fulfill_order
 
 logger = logging.getLogger(__name__)
@@ -165,8 +165,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             profit=product["profit_vnd"]
         )
 
-        # Tạo link ảnh VietQR
-        qr_url = get_vietqr_image_url(amount=product["sell_price_vnd"], order_code=order_code)
+        # Sinh ảnh QR VietQR chuẩn PNG dạng bytes (SePay online hoặc EMVCo offline)
+        qr_bytes = await get_vietqr_image_bytes(amount=product["sell_price_vnd"], order_code=order_code)
 
         invoice_text = (
             f"🧾 **HÓA ĐƠN ĐẶT HÀNG #{order_code}**\n"
@@ -200,13 +200,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_photo(
                 chat_id=user_id,
-                photo=qr_url,
+                photo=qr_bytes,
+                filename=f"vietqr_{order_code}.png",
                 caption=invoice_text,
                 reply_markup=InlineKeyboardMarkup(buttons),
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logger.warning(f"Không gửi được ảnh VietQR trực tiếp, gửi tin nhắn text: {e}")
+            logger.error(f"Không gửi được ảnh VietQR trực tiếp: {e}")
             await context.bot.send_message(
                 chat_id=user_id,
                 text=invoice_text,
