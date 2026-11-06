@@ -76,7 +76,15 @@ async def register_user(user_id: int, username: str, full_name: str):
 
 async def sync_products(products: list[dict]):
     """Đồng bộ danh sách sản phẩm từ nhà cung cấp vào DB với giá bán = giá gốc + 20%"""
+    if not products:
+        return
+
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Xóa các sản phẩm cũ/mock/test không còn nằm trong danh mục mới của nhà cung cấp
+        product_ids = [p["id"] for p in products]
+        placeholders = ",".join("?" for _ in product_ids)
+        await db.execute(f"DELETE FROM products WHERE id NOT IN ({placeholders})", product_ids)
+
         for p in products:
             await db.execute("""
                 INSERT INTO products (
