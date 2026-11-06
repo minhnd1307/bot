@@ -53,6 +53,14 @@ DIGISELLER_API_KEY = os.getenv("DIGISELLER_API_KEY", "")
 TAPHOAMMO_API_KEY = os.getenv("TAPHOAMMO_API_KEY", "")
 
 # ================================
+# USERBOT CONFIG (Tự động mua từ Bot khác)
+# ================================
+USERBOT_API_ID = int(os.getenv("USERBOT_API_ID", "0"))
+USERBOT_API_HASH = os.getenv("USERBOT_API_HASH", "")
+USERBOT_SESSION_STRING = os.getenv("USERBOT_SESSION_STRING", "")
+TARGET_BOT_USERNAME = os.getenv("TARGET_BOT_USERNAME", "SupremeLeaderShopBot")
+
+# ================================
 # DATABASE
 # ================================
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bot_store.db")
