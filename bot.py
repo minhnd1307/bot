@@ -34,7 +34,10 @@ def get_main_menu_keyboard(user_id: int):
         [InlineKeyboardButton("📞 Hỗ Trợ Kỹ Thuật", callback_data="menu_support")]
     ]
     if user_id == ADMIN_TELEGRAM_ID:
-        buttons.append([InlineKeyboardButton("📊 Thống Kê Doanh Thu (Admin)", callback_data="admin_stats")])
+        buttons.append([
+            InlineKeyboardButton("📊 Doanh Thu", callback_data="admin_stats"),
+            InlineKeyboardButton("🔄 Đồng Bộ Nguồn Hàng", callback_data="admin_sync")
+        ])
     return InlineKeyboardMarkup(buttons)
 
 # ================================
@@ -320,6 +323,52 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [[InlineKeyboardButton("🔙 Trang chủ", callback_data="menu_home")]]
         await query.message.edit_text(admin_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
+    # 12. Admin bấm Đồng bộ nguồn hàng
+    elif data == "admin_sync":
+        if user_id != ADMIN_TELEGRAM_ID:
+            await query.answer("Bạn không có quyền thực hiện hành động này!", show_alert=True)
+            return
+
+        await query.message.edit_text("⏳ Đang kết nối Userbot và cào toàn bộ sản phẩm thực tế từ bot nguồn...")
+        try:
+            supplier = get_supplier()
+            products = await supplier.fetch_products()
+            await database.sync_products(products)
+            await query.message.edit_text(
+                f"✅ **ĐỒNG BỘ THÀNH CÔNG!**\n\n"
+                f"• Đã nạp `{len(products)}` sản phẩm trực tiếp từ bot nguồn vào cơ sở dữ liệu.\n"
+                f"• Giá bán tự động cộng +20% lãi ròng.\n"
+                f"• Bấm 'Mua Tài Khoản' để kiểm tra danh mục mới!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Trang chủ", callback_data="menu_home")]]),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await query.message.edit_text(
+                f"❌ Lỗi khi đồng bộ: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Trang chủ", callback_data="menu_home")]])
+            )
+
+async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /sync dành cho Admin để quét lại sản phẩm từ bot nguồn bất kỳ lúc nào"""
+    user = update.effective_user
+    if user.id != ADMIN_TELEGRAM_ID:
+        await update.message.reply_text("⛔ Lệnh này chỉ dành cho Admin!")
+        return
+
+    msg = await update.message.reply_text("⏳ Đang cào toàn bộ sản phẩm thực tế từ bot nguồn...")
+    try:
+        supplier = get_supplier()
+        products = await supplier.fetch_products()
+        await database.sync_products(products)
+        await msg.edit_text(
+            f"✅ **ĐỒNG BỘ THÀNH CÔNG!**\n\n"
+            f"• Đã nạp `{len(products)}` sản phẩm trực tiếp từ bot nguồn vào cơ sở dữ liệu.\n"
+            f"• Giá bán tự động cộng +20% lãi ròng.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi khi đồng bộ: {str(e)}")
+
 async def sync_supplier_catalog():
     """Hàm tải sản phẩm từ nhà cung cấp và nạp vào DB"""
     supplier = get_supplier()
@@ -335,5 +384,6 @@ def build_application() -> Application:
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
     return app
