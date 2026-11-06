@@ -76,6 +76,8 @@ jobs:
               echo "🎉 DEPLOY THÀNH CÔNG! Bot đang chạy 24/7!"
               echo "PID: $(pgrep -f run.py)"
               echo "=================================================="
+              echo "--- LOG HIỆN TẠI CỦA BOT ---"
+              cat bot.log
             else
               echo "❌ Khởi động bot thất bại, log gần nhất:"
               tail -n 25 bot.log
