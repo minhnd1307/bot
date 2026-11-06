@@ -21,7 +21,10 @@ USD_TO_VND_RATE = float(os.getenv("USD_TO_VND_RATE", "25400"))
 # Tỷ giá RUB -> VND (dùng cho sàn Nga như LZT/Plati nếu tính bằng Rúp)
 RUB_TO_VND_RATE = float(os.getenv("RUB_TO_VND_RATE", "280"))
 
-# Nhà cung cấp mặc định: 'mock' (để test), 'lzt', 'plati', 'taphoammo'
+# Chu kỳ tự động gọi API đồng bộ sản phẩm và tồn kho (phút)
+AUTO_SYNC_INTERVAL_MINUTES = int(os.getenv("AUTO_SYNC_INTERVAL_MINUTES", "10"))
+
+# Nhà cung cấp mặc định: 'mock' (để test), 'lzt', 'plati', 'taphoammo', 'userbot'
 SUPPLIER_TYPE = os.getenv("SUPPLIER_TYPE", "mock").lower()
 
 # ================================

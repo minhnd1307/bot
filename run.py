@@ -11,7 +11,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from config import SERVER_HOST, SERVER_PORT, TELEGRAM_BOT_TOKEN
+from config import SERVER_HOST, SERVER_PORT, TELEGRAM_BOT_TOKEN, AUTO_SYNC_INTERVAL_MINUTES
 import database
 from bot import build_application, sync_supplier_catalog
 from server import app as fastapi_app, set_bot_instance
@@ -22,6 +22,22 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger("AppRunner")
+
+async def periodic_product_sync(interval_minutes: int):
+    """Tiến trình ngầm tự động gọi API đồng bộ giá và tồn kho từ bot nguồn theo chu kỳ"""
+    interval_seconds = max(interval_minutes, 1) * 60
+    logger.info(f"⏰ [Auto-Sync] Đã kích hoạt tự động gọi API cập nhật sản phẩm & tồn kho mỗi {interval_minutes} phút.")
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            logger.info("🔄 [Auto-Sync] Đang tự động gọi API lấy danh sách sản phẩm & tồn kho mới nhất...")
+            await sync_supplier_catalog()
+            logger.info("✅ [Auto-Sync] Tự động đồng bộ hoàn tất.")
+        except asyncio.CancelledError:
+            logger.info("🛑 [Auto-Sync] Tiến trình tự động đồng bộ đã dừng.")
+            break
+        except Exception as e:
+            logger.error(f"❌ [Auto-Sync] Lỗi trong quá trình tự động đồng bộ: {e}")
 
 async def main():
     logger.info("=== ĐANG KHỞI ĐỘNG HỆ THỐNG TELEGRAM BOT DROPSHIPPING ===")
@@ -62,10 +78,14 @@ async def main():
         logger.info(f"🌐 Webhook Server đang lắng nghe tại http://{SERVER_HOST}:{SERVER_PORT}")
         logger.info(f"👉 SePay Webhook Endpoint: http://<IP_HOẶC_DOMAIN>:{SERVER_PORT}/api/sepay/webhook")
 
+        # Khởi chạy luồng tự động đồng bộ định kỳ trong nền
+        sync_task = asyncio.create_task(periodic_product_sync(AUTO_SYNC_INTERVAL_MINUTES))
+
         try:
             await server.serve()
         finally:
-            logger.info("Đang dừng Telegram Bot...")
+            logger.info("Đang dừng các dịch vụ...")
+            sync_task.cancel()
             await telegram_app.updater.stop()
             await telegram_app.stop()
 
