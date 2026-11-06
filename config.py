@@ -53,12 +53,14 @@ DIGISELLER_API_KEY = os.getenv("DIGISELLER_API_KEY", "")
 TAPHOAMMO_API_KEY = os.getenv("TAPHOAMMO_API_KEY", "")
 
 # ================================
-# USERBOT CONFIG (Tự động mua từ Bot khác)
+# USERBOT & SUPREMELEADER API CONFIG
 # ================================
 USERBOT_API_ID = int(os.getenv("USERBOT_API_ID", "0"))
 USERBOT_API_HASH = os.getenv("USERBOT_API_HASH", "")
 USERBOT_SESSION_STRING = os.getenv("USERBOT_SESSION_STRING", "")
 TARGET_BOT_USERNAME = os.getenv("TARGET_BOT_USERNAME", "SupremeLeaderShopBot")
+SUPREME_API_KEY = os.getenv("SUPREME_API_KEY", "api_BvV3Go0Ns8BywwdwUiko5HLGxEDPZAMEQDgLm1XAxxc")
+SUPREME_BASE_URL = os.getenv("SUPREME_BASE_URL", "https://telegram-shop-bot-production-48fa.up.railway.app")
 
 # ================================
 # DATABASE

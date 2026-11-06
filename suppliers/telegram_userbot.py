@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import httpx
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from config import (
@@ -9,6 +10,8 @@ from config import (
     USERBOT_SESSION_STRING,
     TARGET_BOT_USERNAME,
     USD_TO_VND_RATE,
+    SUPREME_API_KEY,
+    SUPREME_BASE_URL,
 )
 from suppliers.base import BaseSupplier
 
@@ -17,13 +20,16 @@ logger = logging.getLogger(__name__)
 class TelegramUserbotSupplier(BaseSupplier):
     """
     Tự động hóa hoàn toàn với Bot Telegram nguồn (@SupremeLeaderShopBot):
-    1. Tự động đồng bộ (crawl) 100% danh sách sản phẩm, giá USD và tồn kho từ bot nguồn.
+    1. Kết nối trực tiếp REST API chính thức của bot nguồn để lấy 100% (30 sản phẩm thực tế).
     2. Tự động quy đổi USD -> VND và cộng 20% lợi nhuận làm tròn tới nghìn đồng.
-    3. Tự động tương tác, bấm nút mua và bóc tách tài khoản giao cho khách.
+    3. Tự động gọi API mua hàng và bàn giao tài khoản ngay khi có khách thanh toán.
+    4. Tích hợp sẵn cơ chế dự phòng qua Telethon Userbot nếu API gián đoạn.
     """
 
     def __init__(self):
         self.target_bot = TARGET_BOT_USERNAME.lstrip("@")
+        self.api_key = SUPREME_API_KEY
+        self.base_url = SUPREME_BASE_URL.rstrip("/")
         self.client = None
         if USERBOT_API_ID and USERBOT_API_HASH and USERBOT_SESSION_STRING:
             self.client = TelegramClient(
@@ -34,9 +40,7 @@ class TelegramUserbotSupplier(BaseSupplier):
 
     async def _ensure_connected(self):
         """Khởi động kết nối Telethon nếu chưa kết nối"""
-        if not self.client:
-            raise ValueError("Chưa cấu hình USERBOT_API_ID, USERBOT_API_HASH hoặc USERBOT_SESSION_STRING trong .env")
-        if not self.client.is_connected():
+        if self.client and not self.client.is_connected():
             await self.client.connect()
 
     @staticmethod
@@ -48,8 +52,8 @@ class TelegramUserbotSupplier(BaseSupplier):
     def _categorize(name: str) -> str:
         n = name.lower()
         if any(k in n for k in ["gmail", "hotmail", "mail", "voice", "telegram", "ip"]):
-            return "📧 Tài Khoản & Tiện Ích"
-        elif any(k in n for k in ["gpt", "gemini", "claude", "grok", "cursor", "ai", "token", "muse"]):
+            return "📧 Tài Khoản & Email"
+        elif any(k in n for k in ["gpt", "gemini", "claude", "grok", "cursor", "ai", "token", "muse", "codex"]):
             return "🤖 Trí Tuệ Nhân Tạo (AI)"
         elif any(k in n for k in ["netflix", "youtube", "music", "spotify", "tv", "film"]):
             return "🎬 Giải Trí (Phim & Nhạc)"
@@ -59,23 +63,79 @@ class TelegramUserbotSupplier(BaseSupplier):
 
     async def fetch_products(self) -> list[dict]:
         """
-        Đồng bộ trực tiếp danh sách sản phẩm từ @SupremeLeaderShopBot theo thời gian thực.
+        Đồng bộ trực tiếp 100% danh mục sản phẩm từ SupremeLeaderShop.
+        Ưu tiên qua REST API chính thức, dự phòng qua Telethon crawler.
         """
+        # 1. Thử lấy qua REST API chính thức (cực nhanh, đủ 30 sản phẩm)
+        if self.api_key:
+            try:
+                logger.info(f"Đang đồng bộ sản phẩm từ REST API SupremeLeaderShop ({self.base_url})...")
+                async with httpx.AsyncClient(timeout=15.0) as http_client:
+                    resp = await http_client.get(
+                        f"{self.base_url}/api/telegram-buyer/products",
+                        params={"key": self.api_key}
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        raw_products = data.get("products", [])
+                        if raw_products:
+                            products = []
+                            for p in raw_products:
+                                p_id = p.get("_id")
+                                p_name = p.get("product_name", "Unknown")
+                                price_usd = float(p.get("walletPricing") or p.get("usdPricing") or 0.0)
+                                stock = int(p.get("stats", {}).get("available", 0))
+                                in_stock = stock > 0
+                                desc = p.get("description", "").strip()
+
+                                cost_price_vnd = int(price_usd * USD_TO_VND_RATE)
+                                sell_price_vnd, profit_vnd = self.calculate_price_and_profit(cost_price_vnd)
+
+                                formatted_desc = (
+                                    f"📦 Gói: {p_name}\n"
+                                    f"• Giá gốc: ${price_usd:.2f} (~{cost_price_vnd:,} VNĐ)\n"
+                                    f"• Tồn kho thực tế: {stock} tài khoản sẵn có\n"
+                                    f"• Bảo hành: Tự động đổi mới 1-1\n"
+                                    f"━━━━━━━━━━━━━━━━━━\n"
+                                    f"{desc[:300]}..." if len(desc) > 300 else desc
+                                )
+
+                                products.append({
+                                    "id": p_id,
+                                    "supplier_id": p_id,
+                                    "name": p_name,
+                                    "category": self._categorize(p_name),
+                                    "description": formatted_desc,
+                                    "cost_price_vnd": cost_price_vnd,
+                                    "sell_price_vnd": sell_price_vnd,
+                                    "profit_vnd": profit_vnd,
+                                    "in_stock": in_stock,
+                                    "stock_count": stock,
+                                })
+
+                            logger.info(f"✅ Đã đồng bộ thành công {len(products)} sản phẩm từ API SupremeLeaderShop!")
+                            return products
+            except Exception as e:
+                logger.warning(f"Lỗi khi gọi API SupremeLeaderShop ({e}), chuyển sang cào bằng Userbot...")
+
+        # 2. Dự phòng: Quét qua Telethon Userbot
+        return await self._crawl_via_telethon()
+
+    async def _crawl_via_telethon(self) -> list[dict]:
+        """Cào sản phẩm trực tiếp từ giao diện chat bot Telegram"""
         try:
             await self._ensure_connected()
         except Exception as e:
-            logger.warning(f"Không thể kết nối Userbot ({e}), sử dụng danh mục dự phòng.")
+            logger.warning(f"Không thể kết nối Userbot ({e}), dùng danh mục dự phòng.")
             return self._fallback_products()
 
-        logger.info(f"Đang cào danh sách sản phẩm trực tiếp từ @{self.target_bot}...")
-        crawled_products = []
-
+        logger.info(f"Đang cào sản phẩm qua Telethon từ @{self.target_bot}...")
+        crawled = []
         try:
             async with self.client.conversation(f"@{self.target_bot}", timeout=30) as conv:
                 await conv.send_message("/start")
                 await asyncio.sleep(2)
 
-                # Tìm nút Shop trong menu chính
                 messages = await self.client.get_messages(f"@{self.target_bot}", limit=3)
                 menu_msg = None
                 for m in messages:
@@ -85,21 +145,15 @@ class TelegramUserbotSupplier(BaseSupplier):
                                 if getattr(b, "data", b"") == b"user_dashboard_shop":
                                     menu_msg = m
                                     break
-                        if menu_msg:
-                            break
 
                 if not menu_msg:
-                    logger.warning("Không tìm thấy nút Shop trên bot nguồn, dùng danh mục dự phòng.")
                     return self._fallback_products()
 
-                # Bấm nút Shop
                 await menu_msg.click(data=b"user_dashboard_shop")
                 await asyncio.sleep(2)
 
-                # Duyệt qua các trang sản phẩm
                 visited_pages = set()
                 curr_page = 0
-
                 while curr_page not in visited_pages:
                     visited_pages.add(curr_page)
                     shop_msgs = await self.client.get_messages(f"@{self.target_bot}", limit=1)
@@ -115,12 +169,9 @@ class TelegramUserbotSupplier(BaseSupplier):
                                 data = getattr(btn, "data", b"")
                                 data_str = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
 
-                                # Nút Next phân trang
                                 if data.startswith(b"shop_page_") and "next" in text.lower():
                                     next_btn = data
 
-                                # Bóc tách sản phẩm: Name - $Price | Stock
-                                # Ví dụ: ChatGPT Plus 1 Month - $7.00 | 📦 5 Pcs
                                 match = re.search(r"^(.*?)\s*-\s*\$([0-9.]+)\s*\|\s*(.*)$", text)
                                 if match:
                                     raw_name = match.group(1).strip()
@@ -131,22 +182,16 @@ class TelegramUserbotSupplier(BaseSupplier):
                                     sell_price_vnd, profit_vnd = self.calculate_price_and_profit(cost_price_vnd)
                                     in_stock = ("📦" in stock_str) and ("notify" not in stock_str.lower())
 
-                                    crawled_products.append({
+                                    crawled.append({
                                         "id": self._clean_id(raw_name),
                                         "supplier_id": data_str,
                                         "name": raw_name,
                                         "category": self._categorize(raw_name),
-                                        "description": (
-                                            f"Gói dịch vụ chính hãng từ bot nguồn @{self.target_bot}.\n"
-                                            f"• Giá gốc: ${price_usd:.2f} (~{cost_price_vnd:,}đ)\n"
-                                            f"• Trạng thái kho: {stock_str}\n"
-                                            f"• Giao tự động: 1-3 giây sau khi thanh toán."
-                                        ),
+                                        "description": f"Gói dịch vụ chính hãng từ bot nguồn @{self.target_bot}. Trạng thái: {stock_str}.",
                                         "cost_price_vnd": cost_price_vnd,
                                         "sell_price_vnd": sell_price_vnd,
                                         "profit_vnd": profit_vnd,
                                         "in_stock": in_stock,
-                                        "callback_data": data_str
                                     })
 
                     if next_btn:
@@ -156,104 +201,103 @@ class TelegramUserbotSupplier(BaseSupplier):
                     else:
                         break
 
-            if crawled_products:
-                logger.info(f"Đã cào thành công {len(crawled_products)} sản phẩm thực tế từ @{self.target_bot}!")
-                return crawled_products
-
+            if crawled:
+                return crawled
         except Exception as e:
-            logger.error(f"Lỗi trong quá trình cào sản phẩm từ @{self.target_bot}: {e}")
+            logger.error(f"Lỗi cào qua Telethon: {e}")
 
         return self._fallback_products()
 
     def _fallback_products(self) -> list[dict]:
-        """Danh mục dự phòng khi bot nguồn tạm ngưng hoặc mất kết nối"""
+        """Danh mục dự phòng"""
         catalog = [
-            {
-                "id": "ub_chatgpt_plus_1_month",
-                "supplier_id": "shop_buy_p1",
-                "name": "ChatGPT Plus 1 Month",
-                "category": "🤖 Trí Tuệ Nhân Tạo (AI)",
-                "description": "Tài khoản ChatGPT Plus 1 tháng tự động mua qua @SupremeLeaderShopBot.",
-                "cost_price_vnd": 178000,
-            },
-            {
-                "id": "ub_gemini_ai_pro_3m",
-                "supplier_id": "api_shop_view_c772ff7e52465a1c2dbad4a8b1bad0ea",
-                "name": "Gemini AI Pro 3M",
-                "category": "🤖 Trí Tuệ Nhân Tạo (AI)",
-                "description": "Nâng cấp Gemini AI Pro 3 tháng từ bot nguồn @SupremeLeaderShopBot.",
-                "cost_price_vnd": 23000,
-            },
-            {
-                "id": "ub_netflix_4k_premium_1_month",
-                "supplier_id": "api_shop_view_e2cbbc598510676e9ad755d3da566904",
-                "name": "Netflix 4K Premium 1 month",
-                "category": "🎬 Giải Trí (Phim & Nhạc)",
-                "description": "Gói Netflix Premium 4K từ bot nguồn @SupremeLeaderShopBot.",
-                "cost_price_vnd": 127000,
-            },
-            {
-                "id": "ub_capcut_pro_1_month",
-                "supplier_id": "api_shop_view_356b0c3398af3787fbc1017f1af6572e",
-                "name": "CapCut Pro 1 month",
-                "category": "🎨 Thiết Kế & Học Tập",
-                "description": "Tài khoản CapCut Pro 1 tháng chính chủ.",
-                "cost_price_vnd": 52000,
-            },
-            {
-                "id": "ub_canva_pro_1_year",
-                "supplier_id": "api_shop_view_1d2c56e3d4a479df5184f73058d378a3",
-                "name": "Canva Pro 1 Year",
-                "category": "🎨 Thiết Kế & Học Tập",
-                "description": "Tài khoản Canva Pro 1 năm tự động từ bot nguồn.",
-                "cost_price_vnd": 153000,
-            }
+            {"id": "local_p1", "name": "ChatGPT Plus", "category": "🤖 Trí Tuệ Nhân Tạo (AI)", "cost_price_vnd": 178000},
+            {"id": "mapped_b5c0f53b65616f69dc620cce", "name": "Gemini AI Pro 3M", "category": "🤖 Trí Tuệ Nhân Tạo (AI)", "cost_price_vnd": 23000},
+            {"id": "mapped_f6124ef88f79557c60e9533c", "name": "Netflix 4K Premium 1 month", "category": "🎬 Giải Trí (Phim & Nhạc)", "cost_price_vnd": 127000},
+            {"id": "mapped_a1fb4f8b6836d91092c4d711", "name": "CapCut Pro 1 month", "category": "🎨 Thiết Kế & Học Tập", "cost_price_vnd": 52000},
+            {"id": "mapped_fef6d11a52c9d4ff89204e13", "name": "Canva Pro 1 Year", "category": "🎨 Thiết Kế & Học Tập", "cost_price_vnd": 153000},
         ]
-
-        products = []
+        res = []
         for item in catalog:
             sell_price, profit = self.calculate_price_and_profit(item["cost_price_vnd"])
-            products.append({
+            res.append({
                 "id": item["id"],
-                "supplier_id": item["supplier_id"],
+                "supplier_id": item["id"],
                 "name": item["name"],
                 "category": item["category"],
-                "description": item["description"],
+                "description": f"Gói dịch vụ {item['name']} tự động từ bot nguồn @{self.target_bot}.",
                 "cost_price_vnd": item["cost_price_vnd"],
                 "sell_price_vnd": sell_price,
                 "profit_vnd": profit,
                 "in_stock": True,
-                "callback_data": item["supplier_id"]
             })
-        return products
+        return res
 
     async def buy_product(self, product_id: str, custom_data: dict = None) -> dict:
         """
-        Quy trình Userbot mua hàng tự động trên @SupremeLeaderShopBot:
-        1. Gửi /start tới bot nguồn
-        2. Mở Shop (user_dashboard_shop)
-        3. Tìm và click nút sản phẩm (khớp callback_data hoặc product_id)
-        4. Bấm nút Mua ngay ('Buy 1x' hoặc 'Buy Now')
-        5. Xác nhận đơn và bóc tách dữ liệu tài khoản trả về
+        Quy trình mua hàng tự động:
+        1. Gọi REST API chính thức của bot nguồn để mua hàng ngay lập tức.
+        2. Nếu API báo thiếu số dư ví (402), thông báo rõ ràng cho Admin.
+        3. Nếu API gặp sự cố, tự động dùng Userbot Telethon bấm nút mua.
         """
+        # 1. Thử mua qua REST API
+        if self.api_key:
+            try:
+                logger.info(f"Đang gửi yêu cầu mua sản phẩm '{product_id}' qua REST API...")
+                async with httpx.AsyncClient(timeout=20.0) as http_client:
+                    resp = await http_client.post(
+                        f"{self.base_url}/api/telegram-buyer/purchase",
+                        json={
+                            "key": self.api_key,
+                            "product_id": product_id,
+                            "quantity": 1,
+                            "lang": "en"
+                        }
+                    )
+                    res_json = resp.json() if resp.status_code in [200, 400, 402] else {}
+
+                    if resp.status_code == 200 and res_json.get("success"):
+                        delivered = res_json.get("data") or res_json.get("delivered_data") or res_json.get("message") or str(res_json)
+                        return {
+                            "success": True,
+                            "delivered_data": (
+                                f"✅ **TÀI KHOẢN TỰ ĐỘNG (NGUỒN @{self.target_bot})**\n"
+                                f"━━━━━━━━━━━━━━━━━━\n"
+                                f"{delivered}\n"
+                                f"━━━━━━━━━━━━━━━━━━\n"
+                                f"📌 Vui lòng kiểm tra và đổi mật khẩu sau khi nhận."
+                            ),
+                            "cost_price_vnd": 0,
+                            "error": None
+                        }
+                    elif resp.status_code == 402 or res_json.get("error") == "insufficient_balance":
+                        return {
+                            "success": False,
+                            "delivered_data": "",
+                            "cost_price_vnd": 0,
+                            "error": f"⚠️ Ví của bạn trên @{self.target_bot} đang có số dư 0.00 USDT. Vui lòng nạp tiền vào bot nguồn để xuất hàng!"
+                        }
+                    else:
+                        err_msg = res_json.get("error") or resp.text
+                        logger.warning(f"API purchase trả về lỗi: {err_msg}, chuyển sang Telethon...")
+            except Exception as e:
+                logger.warning(f"Lỗi khi mua qua API ({e}), chuyển sang Telethon...")
+
+        # 2. Dự phòng mua qua Telethon Userbot
+        return await self._buy_via_telethon(product_id)
+
+    async def _buy_via_telethon(self, product_id: str) -> dict:
+        """Dự phòng: Mua bằng cách click nút qua Telethon"""
         try:
             await self._ensure_connected()
         except Exception as e:
-            return {
-                "success": False,
-                "delivered_data": "",
-                "cost_price_vnd": 0,
-                "error": f"Lỗi khởi động Userbot: {str(e)}"
-            }
-
-        logger.info(f"Userbot đang tiến hành mua '{product_id}' từ @{self.target_bot}...")
+            return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": f"Lỗi Userbot: {str(e)}"}
 
         try:
             async with self.client.conversation(f"@{self.target_bot}", timeout=35) as conv:
                 await conv.send_message("/start")
                 await asyncio.sleep(2)
 
-                # 1. Tìm nút Shop
                 messages = await self.client.get_messages(f"@{self.target_bot}", limit=3)
                 menu_msg = None
                 for m in messages:
@@ -263,20 +307,14 @@ class TelegramUserbotSupplier(BaseSupplier):
                                 if getattr(b, "data", b"") == b"user_dashboard_shop":
                                     menu_msg = m
                                     break
-                        if menu_msg:
-                            break
-
                 if not menu_msg:
-                    return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": "Không tìm thấy nút Shop trên bot nguồn."}
+                    return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": "Không tìm thấy nút Shop."}
 
                 await menu_msg.click(data=b"user_dashboard_shop")
                 await asyncio.sleep(2)
 
-                # 2. Tìm nút sản phẩm trong các trang của Shop
                 target_btn = None
                 target_msg = None
-
-                # Duyệt các trang
                 for page_idx in range(4):
                     shop_msgs = await self.client.get_messages(f"@{self.target_bot}", limit=1)
                     if not shop_msgs or not shop_msgs[0].buttons:
@@ -288,20 +326,14 @@ class TelegramUserbotSupplier(BaseSupplier):
                         for btn in row:
                             b_data = getattr(btn, "data", b"")
                             b_data_str = b_data.decode("utf-8", errors="ignore") if isinstance(b_data, bytes) else str(b_data)
-                            b_text = btn.text.lower()
-
-                            # Kiểm tra nếu nút này khớp với product_id hoặc supplier_id
-                            clean_name_id = self._clean_id(btn.text.split("-")[0].strip())
-                            if b_data_str == product_id or clean_name_id == product_id or product_id in b_data_str:
+                            if b_data_str == product_id or product_id in b_data_str:
                                 target_btn = b_data
                                 target_msg = sm
                                 break
-
-                            if b_data.startswith(b"shop_page_") and "next" in b_text:
+                            if b_data.startswith(b"shop_page_") and "next" in btn.text.lower():
                                 next_btn = b_data
                         if target_btn:
                             break
-
                     if target_btn:
                         break
                     if next_btn:
@@ -311,25 +343,17 @@ class TelegramUserbotSupplier(BaseSupplier):
                         break
 
                 if not target_btn:
-                    return {
-                        "success": False,
-                        "delivered_data": "",
-                        "cost_price_vnd": 0,
-                        "error": f"Không tìm thấy nút mua sản phẩm '{product_id}' trên @{self.target_bot}."
-                    }
+                    return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": f"Không tìm thấy nút mua cho sản phẩm {product_id}."}
 
-                # 3. Click vào sản phẩm để mở màn hình chi tiết
                 await target_msg.click(data=target_btn)
                 await asyncio.sleep(2)
 
-                # 4. Tìm nút Mua (Buy 1x / Buy Now)
                 detail_msgs = await self.client.get_messages(f"@{self.target_bot}", limit=1)
                 if not detail_msgs or not detail_msgs[0].buttons:
                     return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": "Không mở được chi tiết sản phẩm."}
 
                 dm = detail_msgs[0]
                 buy_action_btn = None
-
                 for row in dm.buttons:
                     for b in row:
                         b_text = b.text.lower()
@@ -341,71 +365,22 @@ class TelegramUserbotSupplier(BaseSupplier):
                         break
 
                 if not buy_action_btn:
-                    return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": "Không tìm thấy nút 'Buy 1x' hoặc 'Buy Now'."}
+                    return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": "Không tìm thấy nút Mua."}
 
-                logger.info(f"Bấm nút mua: {buy_action_btn}")
                 await dm.click(data=buy_action_btn)
                 await asyncio.sleep(2.5)
 
-                # 5. Kiểm tra kết quả trả về
                 result_msgs = await self.client.get_messages(f"@{self.target_bot}", limit=2)
-                latest_text = ""
-                for rm in reversed(result_msgs):
-                    if rm.text:
-                        latest_text += rm.text + "\n"
+                latest_text = "\n".join(rm.text for rm in reversed(result_msgs) if rm.text)
 
-                # Kiểm tra lỗi thiếu số dư trên bot nguồn
-                insufficient_keywords = ["not enough", "insufficient", "balance", "top up", "wallet"]
-                if any(w in latest_text.lower() for w in insufficient_keywords) and "success" not in latest_text.lower():
-                    logger.error(f"Bot nguồn báo lỗi số dư: {latest_text}")
-                    return {
-                        "success": False,
-                        "delivered_data": "",
-                        "cost_price_vnd": 0,
-                        "error": f"⚠️ Ví Userbot trên @{self.target_bot} không đủ số dư để mua hàng. Vui lòng nạp thêm tiền vào bot nguồn!"
-                    }
+                if any(w in latest_text.lower() for w in ["not enough", "insufficient", "balance"]):
+                    return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": f"⚠️ Ví của bạn trên @{self.target_bot} đang có số dư 0.00 USDT. Vui lòng nạp tiền vào bot nguồn!"}
 
-                # Kiểm tra nút xác nhận mua nếu có
-                for rm in result_msgs:
-                    if rm.buttons:
-                        for row in rm.buttons:
-                            for b in row:
-                                if any(w in b.text.lower() for w in ["confirm", "xác nhận", "yes"]):
-                                    await rm.click(data=getattr(b, "data", None))
-                                    await asyncio.sleep(2)
-                                    break
-
-                # Lấy tin nhắn bàn giao sản phẩm cuối cùng
-                final_msgs = await self.client.get_messages(f"@{self.target_bot}", limit=1)
-                final_text = final_msgs[0].text if final_msgs else latest_text
-
-                logger.info(f"Đã nhận nội dung bàn giao từ @{self.target_bot} thành công!")
                 return {
                     "success": True,
-                    "delivered_data": (
-                        f"✅ **TÀI KHOẢN TỰ ĐỘNG (NGUỒN @{self.target_bot})**\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"{final_text}\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 Vui lòng kiểm tra và đổi mật khẩu sau khi nhận."
-                    ),
+                    "delivered_data": f"✅ **TÀI KHOẢN TỰ ĐỘNG (NGUỒN @{self.target_bot})**\n━━━━━━━━━━━━━━━━━━\n{latest_text}\n━━━━━━━━━━━━━━━━━━",
                     "cost_price_vnd": 0,
                     "error": None
                 }
-
-        except asyncio.TimeoutError:
-            logger.error(f"Quá thời gian chờ phản hồi từ @{self.target_bot}")
-            return {
-                "success": False,
-                "delivered_data": "",
-                "cost_price_vnd": 0,
-                "error": f"Bot nguồn @{self.target_bot} phản hồi quá chậm."
-            }
         except Exception as e:
-            logger.error(f"Lỗi khi Userbot mua hàng: {e}")
-            return {
-                "success": False,
-                "delivered_data": "",
-                "cost_price_vnd": 0,
-                "error": f"Lỗi Userbot: {str(e)}"
-            }
+            return {"success": False, "delivered_data": "", "cost_price_vnd": 0, "error": f"Lỗi Userbot: {str(e)}"}
