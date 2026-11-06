@@ -28,19 +28,23 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
+          # Ghi private key ra file
           printf "%s\n" "$GCP_SSH_KEY" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
 
-          echo "Số dòng trong GCP_SSH_KEY: $(wc -l < ~/.ssh/id_deploy)"
-          echo "Dòng đầu tiên bắt đầu bằng: $(head -n 1 ~/.ssh/id_deploy | cut -c 1-15)..."
-
-          if ! grep -q "PRIVATE KEY" ~/.ssh/id_deploy; then
-            echo "::error::Khóa bạn dán vào KHÔNG chứa chữ 'PRIVATE KEY'. Vui lòng kiểm tra lại!"
-            exit 1
+          # Tự động bổ sung header và footer nếu người dùng chỉ copy phần mã base64 ở giữa
+          if ! grep -q "BEGIN" ~/.ssh/id_deploy; then
+            echo "Tự động bổ sung BEGIN/END OPENSSH PRIVATE KEY..."
+            {
+              echo "-----BEGIN OPENSSH PRIVATE KEY-----"
+              cat ~/.ssh/id_deploy
+              echo "-----END OPENSSH PRIVATE KEY-----"
+            } > ~/.ssh/id_deploy.tmp && mv ~/.ssh/id_deploy.tmp ~/.ssh/id_deploy
           fi
 
+          chmod 600 ~/.ssh/id_deploy
+
           echo "Đang kết nối SSH tới $GCP_USER@$GCP_HOST..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i ~/.ssh/id_deploy "$GCP_USER@$GCP_HOST" << 'EOF'
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 -i ~/.ssh/id_deploy "$GCP_USER@$GCP_HOST" << 'EOF'
             set -e
             cd ~/telegram-bot
             chmod +x deploy.sh
