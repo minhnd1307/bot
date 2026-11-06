@@ -59,6 +59,14 @@ class MockSupplier(BaseSupplier):
                 "category": "🎵 Giải Trí (YouTube / Netflix)",
                 "description": "Profile riêng biệt, có mã PIN, xem mượt mà trên TV, điện thoại, máy tính.",
                 "cost_price_vnd": 65000,
+            },
+            {
+                "id": "test_order_2k",
+                "supplier_id": "mock_test_01",
+                "name": "🧪 Gói Test Thử Nghiệm (2.000đ)",
+                "category": "🧪 Test Chuyển Tiền (2.000đ)",
+                "description": "Gói test thanh toán 2.000 VNĐ kiểm tra tính năng quét mã VietQR và nhận tin nhắn tự động từ Bot.",
+                "cost_price_vnd": 1600,
             }
         ]
 
@@ -132,6 +140,17 @@ class MockSupplier(BaseSupplier):
                 f"1. Nhấp vào đường link trên bằng tài khoản Google bạn muốn nâng cấp.\n"
                 f"2. Bấm 'Tham gia gia đình'.\n"
                 f"3. Mở YouTube kiểm tra logo 'Premium' ở góc trên cùng bên trái."
+            )
+        elif "test_order_2k" in product_id:
+            delivered_info = (
+                f"🎉 **CHÚC MỪNG BẠN ĐÃ TEST THANH TOÁN THÀNH CÔNG!**\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"✅ Hệ thống VietQR & SePay Webhook hoạt động hoàn hảo 100%!\n"
+                f"💵 Số tiền test: `2.000 VNĐ`\n"
+                f"📈 Tiền lãi hệ thống đã ghi nhận: `+400 VNĐ` (+20%)\n"
+                f"🆔 Mã giao dịch thử nghiệm: `TEST_TOKEN_{rand_id}`\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👉 Toàn bộ luồng nhận tiền và giao dịch tự động đã sẵn sàng để bán hàng thật!"
             )
         else:
             delivered_info = (
