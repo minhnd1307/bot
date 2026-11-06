@@ -1,6 +1,7 @@
 import math
 import logging
 import random
+import aiosqlite
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -24,6 +25,8 @@ from config import (
     BANK_ID,
     BANK_ACCOUNT_NO,
     BANK_ACCOUNT_NAME,
+    BROADCAST_CHANNEL_ID,
+    BOT_USERNAME,
 )
 import database
 from suppliers import get_supplier
@@ -31,6 +34,73 @@ from payments.vietqr import get_vietqr_image_url, get_vietqr_image_bytes
 from fulfillment import fulfill_order
 
 logger = logging.getLogger(__name__)
+
+# ================================
+# TỰ ĐỘNG PHÁT THÔNG BÁO LÊN KÊNH (BROADCAST)
+# ================================
+def get_product_emoji(name: str) -> str:
+    n = name.lower()
+    if "capcut" in n:
+        return "✂️"
+    elif "chatgpt" in n or "gpt" in n:
+        return "🤖"
+    elif "claude" in n:
+        return "⚡"
+    elif "codex" in n:
+        return "💻"
+    elif "gemini" in n:
+        return "♊"
+    elif "netflix" in n:
+        return "🍿"
+    elif "canva" in n:
+        return "🎨"
+    elif "duolingo" in n:
+        return "🦉"
+    elif "apple" in n:
+        return "🍎"
+    elif any(k in n for k in ["gmail", "email", "mail", "hotmail"]):
+        return "📧"
+    return "📦"
+
+async def broadcast_product_to_channel(bot, product: dict, added_qty: int = None) -> bool:
+    """Tự động đăng bài thông báo hàng về / tồn kho lên Kênh Telegram của shop y hệt mẫu ảnh"""
+    if not BROADCAST_CHANNEL_ID:
+        return False
+
+    stock = int(product.get("stock_count", 0))
+    if stock <= 0:
+        return False
+
+    if added_qty is None:
+        added_qty = max(1, min(stock, random.randint(5, 25)))
+
+    emoji = get_product_emoji(product["name"])
+    clean_name = product["name"]
+    sell_price = product["sell_price_vnd"]
+    prod_id = product["id"]
+
+    text = (
+        f"{emoji} {clean_name}\n"
+        f"➕ Thêm: {added_qty}\n"
+        f"📦 Tồn kho hiện tại: {stock}\n"
+        f"💵 Giá: {sell_price:,}đ"
+    )
+
+    buy_url = f"https://t.me/{BOT_USERNAME}?start=prod_{prod_id}"
+    button = InlineKeyboardButton("🛒 Mua ngay", url=buy_url)
+    markup = InlineKeyboardMarkup([[button]])
+
+    try:
+        await bot.send_message(
+            chat_id=BROADCAST_CHANNEL_ID,
+            text=text,
+            reply_markup=markup
+        )
+        logger.info(f"✅ Đã phát thông báo lên Kênh ({BROADCAST_CHANNEL_ID}): {clean_name}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Không thể phát thông báo lên Kênh ({BROADCAST_CHANNEL_ID}): {e}")
+        return False
 
 # ================================
 # BÀN PHÍM ĐIỀU HƯỚNG CHÍNH
@@ -61,7 +131,10 @@ def get_admin_keyboard():
             InlineKeyboardButton("🔄 Đồng Bộ Nguồn Hàng", callback_data="admin_sync")
         ],
         [
-            InlineKeyboardButton("🔍 Hướng Dẫn Tra Cứu Đơn", callback_data="admin_search_guide"),
+            InlineKeyboardButton("📢 Đăng Báo Hàng Lên Kênh", callback_data="admin_broadcast_sample"),
+            InlineKeyboardButton("🔍 Hướng Dẫn Tra Cứu Đơn", callback_data="admin_search_guide")
+        ],
+        [
             InlineKeyboardButton("🔙 Về Menu Khách", callback_data="menu_home")
         ]
     ])
@@ -104,6 +177,66 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username=user.username or "",
         full_name=user.full_name or "Khách hàng"
     )
+
+    # 1. Xử lý Deep-link từ Kênh: https://t.me/Cho_moi_bot?start=prod_<id>
+    if context.args and len(context.args) > 0 and context.args[0].startswith("prod_"):
+        prod_id = context.args[0].replace("prod_", "")
+        product = await database.get_product(prod_id)
+        if product:
+            stock = int(product.get("stock_count", 0))
+            unit_price = product["sell_price_vnd"]
+
+            if stock > 0:
+                stock_badge = f"📦 **Tồn kho hiện có:** `{stock}` tài khoản sẵn có"
+            else:
+                stock_badge = "🔴 **Tình trạng:** `Tạm hết hàng trong kho nguồn`"
+
+            detail_text = (
+                f"📦 **{product['name']}**\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{stock_badge}\n"
+                f"💰 **Đơn giá:** `{unit_price:,} VNĐ / 1 tài khoản`\n"
+            )
+
+            if stock > 0:
+                detail_text += (
+                    f"🔢 **Số lượng chọn:** `1` tài khoản\n"
+                    f"💳 **Tổng thanh toán:** `{unit_price:,} VNĐ`\n"
+                )
+
+            detail_text += (
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📝 **Mô tả chi tiết:**\n{product['description']}\n\n"
+                f"🛡️ **Bảo hành:** 1 đổi 1 tự động\n"
+                f"⚡ **Giao nhận:** Tự động qua tin nhắn ngay sau khi thanh toán\n"
+                f"━━━━━━━━━━━━━━━━━━"
+            )
+
+            buttons = []
+            if stock <= 0:
+                buttons.append([InlineKeyboardButton("⚠️ Tạm Hết Hàng (Vui lòng chọn gói khác)", callback_data="noop")])
+            else:
+                buttons.append([
+                    InlineKeyboardButton("➖ 1", callback_data="noop"),
+                    InlineKeyboardButton("🔢 SL: 1", callback_data="noop"),
+                    InlineKeyboardButton("➕ 1", callback_data=f"prod_{prod_id}_2" if stock >= 2 else "noop")
+                ])
+                if stock >= 2:
+                    quick_row = []
+                    for q in [1, 2, 3, 5, 10]:
+                        if q <= stock:
+                            label = f"✓ {q}x" if q == 1 else f"{q}x"
+                            quick_row.append(InlineKeyboardButton(label, callback_data=f"prod_{prod_id}_{q}"))
+                    if quick_row:
+                        buttons.append(quick_row)
+                buttons.append([InlineKeyboardButton(f"⚡ MUA NGAY (1x • {unit_price:,}đ)", callback_data=f"buy_{prod_id}_1")])
+
+            buttons.append([InlineKeyboardButton("🔙 Quay lại Danh mục", callback_data=f"cat_{product['category']}")])
+            buttons.append([InlineKeyboardButton("🏠 Về Trang Chủ", callback_data="menu_home")])
+
+            if update.message:
+                await update.message.reply_text(detail_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                return
 
     welcome_text = (
         f"👋 **Chào mừng {user.first_name} đến với Shop Tài Khoản Tự Động!**\n\n"
@@ -683,6 +816,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Về Bảng Quản Trị", callback_data="admin_dashboard")]])
             )
 
+    # 18. Admin bấm Đăng Báo Hàng Lên Kênh
+    elif data == "admin_broadcast_sample":
+        if not BROADCAST_CHANNEL_ID:
+            await query.answer("⚠️ Chưa cấu hình BROADCAST_CHANNEL_ID trong hệ thống!", show_alert=True)
+            return
+
+        async with aiosqlite.connect(database.DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM products WHERE in_stock = 1 AND stock_count > 0") as c:
+                rows = await c.fetchall()
+                in_stock_prods = [dict(r) for r in rows]
+
+        if not in_stock_prods:
+            await query.answer("❌ Hiện không có sản phẩm nào có sẵn tồn kho > 0 để đăng bài!", show_alert=True)
+            return
+
+        hot_prods = [p for p in in_stock_prods if any(k in p["name"].lower() for k in ["capcut", "chatgpt", "netflix", "canva", "duolingo", "apple"])]
+        chosen = random.choice(hot_prods) if hot_prods else random.choice(in_stock_prods)
+
+        ok = await broadcast_product_to_channel(context.bot, chosen)
+        if ok:
+            await query.answer(f"✅ Đã đăng thông báo cho [{chosen['name'][:20]}] lên Kênh thành công!", show_alert=True)
+        else:
+            await query.answer("❌ Lỗi khi gửi tin nhắn đến Kênh!", show_alert=True)
+
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /admin dành cho chủ shop mở Bảng Quản Trị"""
     user = update.effective_user
@@ -949,13 +1107,35 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi khi đồng bộ: {str(e)}")
 
-async def sync_supplier_catalog():
-    """Hàm tải sản phẩm từ nhà cung cấp và nạp vào DB"""
+async def sync_supplier_catalog(bot=None):
+    """Hàm tải sản phẩm từ nhà cung cấp và nạp vào DB, tự động phát hiện hàng mới về để đăng lên Kênh"""
     supplier = get_supplier()
     logger.info(f"Đang đồng bộ sản phẩm từ nhà cung cấp {supplier.__class__.__name__}...")
+
+    # Lấy tồn kho hiện tại trong DB để so sánh
+    old_stocks = {}
+    try:
+        async with aiosqlite.connect(database.DATABASE_PATH) as db:
+            async with db.execute("SELECT id, stock_count FROM products") as c:
+                for row in await c.fetchall():
+                    old_stocks[row[0]] = int(row[1] or 0)
+    except Exception:
+        pass
+
     products = await supplier.fetch_products()
     await database.sync_products(products)
     logger.info(f"Đã đồng bộ {len(products)} sản phẩm vào cơ sở dữ liệu.")
+
+    # Phát hiện sản phẩm được nhập thêm hàng (Restock) và bắn lên Kênh
+    if bot and BROADCAST_CHANNEL_ID:
+        for p in products:
+            p_id = p["id"]
+            new_stock = int(p.get("stock_count", 0))
+            old_stock = old_stocks.get(p_id, 0)
+            if new_stock > old_stock and new_stock > 0 and old_stock > 0:
+                diff = new_stock - old_stock
+                await broadcast_product_to_channel(bot, p, added_qty=diff)
+                await asyncio.sleep(2)
 
 async def setup_bot_commands(bot):
     """Thiết lập menu lệnh gợi ý nhanh (Bot Commands Menu) trên giao diện chat Telegram"""

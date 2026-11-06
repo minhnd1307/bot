@@ -11,9 +11,11 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from config import SERVER_HOST, SERVER_PORT, TELEGRAM_BOT_TOKEN, AUTO_SYNC_INTERVAL_MINUTES
+import random
+import aiosqlite
+from config import SERVER_HOST, SERVER_PORT, TELEGRAM_BOT_TOKEN, AUTO_SYNC_INTERVAL_MINUTES, BROADCAST_CHANNEL_ID
 import database
-from bot import build_application, sync_supplier_catalog, setup_bot_commands
+from bot import build_application, sync_supplier_catalog, setup_bot_commands, broadcast_product_to_channel
 from server import app as fastapi_app, set_bot_instance
 
 # Cấu hình logging
@@ -23,7 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AppRunner")
 
-async def periodic_product_sync(interval_minutes: int):
+async def periodic_product_sync(interval_minutes: int, bot=None):
     """Tiến trình ngầm tự động gọi API đồng bộ giá và tồn kho từ bot nguồn theo chu kỳ"""
     interval_seconds = max(interval_minutes, 1) * 60
     logger.info(f"⏰ [Auto-Sync] Đã kích hoạt tự động gọi API cập nhật sản phẩm & tồn kho mỗi {interval_minutes} phút.")
@@ -31,13 +33,42 @@ async def periodic_product_sync(interval_minutes: int):
         try:
             await asyncio.sleep(interval_seconds)
             logger.info("🔄 [Auto-Sync] Đang tự động gọi API lấy danh sách sản phẩm & tồn kho mới nhất...")
-            await sync_supplier_catalog()
+            await sync_supplier_catalog(bot=bot)
             logger.info("✅ [Auto-Sync] Tự động đồng bộ hoàn tất.")
         except asyncio.CancelledError:
             logger.info("🛑 [Auto-Sync] Tiến trình tự động đồng bộ đã dừng.")
             break
         except Exception as e:
             logger.error(f"❌ [Auto-Sync] Lỗi trong quá trình tự động đồng bộ: {e}")
+
+async def periodic_channel_broadcast(bot, interval_hours: int = 1):
+    """Tiến trình định kỳ (mỗi 1 tiếng) tự động đăng bài thông báo sản phẩm lên Kênh của shop"""
+    if not BROADCAST_CHANNEL_ID:
+        return
+    logger.info(f"📢 [Channel-Broadcast] Kích hoạt tự động đăng tin lên Kênh ({BROADCAST_CHANNEL_ID}) mỗi {interval_hours} giờ.")
+    # Đợi 2 phút sau khi bot khởi động trước khi bắn tin đầu tiên
+    await asyncio.sleep(120)
+    while True:
+        try:
+            logger.info("📢 [Channel-Broadcast] Đang chọn sản phẩm có sẵn để đăng lên Kênh...")
+            async with aiosqlite.connect(database.DATABASE_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("SELECT * FROM products WHERE in_stock = 1 AND stock_count > 0") as c:
+                    rows = await c.fetchall()
+                    products = [dict(r) for r in rows]
+
+            if products:
+                hot_prods = [p for p in products if any(k in p["name"].lower() for k in ["capcut", "chatgpt", "netflix", "canva", "duolingo", "apple"])]
+                chosen = random.choice(hot_prods) if hot_prods else random.choice(products)
+                await broadcast_product_to_channel(bot, chosen)
+                logger.info(f"✅ [Channel-Broadcast] Đã đăng bài cho [{chosen['name']}] lên Kênh.")
+
+            await asyncio.sleep(interval_hours * 3600)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"❌ [Channel-Broadcast] Lỗi khi đăng bài: {e}")
+            await asyncio.sleep(600)
 
 async def main():
     logger.info("=== ĐANG KHỞI ĐỘNG HỆ THỐNG TELEGRAM BOT DROPSHIPPING ===")
@@ -79,14 +110,16 @@ async def main():
         logger.info(f"🌐 Webhook Server đang lắng nghe tại http://{SERVER_HOST}:{SERVER_PORT}")
         logger.info(f"👉 SePay Webhook Endpoint: http://<IP_HOẶC_DOMAIN>:{SERVER_PORT}/api/sepay/webhook")
 
-        # Khởi chạy luồng tự động đồng bộ định kỳ trong nền
-        sync_task = asyncio.create_task(periodic_product_sync(AUTO_SYNC_INTERVAL_MINUTES))
+        # Khởi chạy các luồng tự động định kỳ trong nền
+        sync_task = asyncio.create_task(periodic_product_sync(AUTO_SYNC_INTERVAL_MINUTES, bot=telegram_app.bot))
+        broadcast_task = asyncio.create_task(periodic_channel_broadcast(telegram_app.bot, interval_hours=1))
 
         try:
             await server.serve()
         finally:
             logger.info("Đang dừng các dịch vụ...")
             sync_task.cancel()
+            broadcast_task.cancel()
             await telegram_app.updater.stop()
             await telegram_app.stop()
 

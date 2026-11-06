@@ -10,6 +10,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
 SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "")
 SUPPORT_TELEGRAM = os.getenv("SUPPORT_TELEGRAM", "")
+BROADCAST_CHANNEL_ID = int(os.getenv("BROADCAST_CHANNEL_ID", "-1003934272401"))
+BOT_USERNAME = os.getenv("BOT_USERNAME", "Cho_moi_bot")
 
 # ================================
 # BUSINESS CONFIG
