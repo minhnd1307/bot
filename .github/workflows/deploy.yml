@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -13,14 +14,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Execute remote deploy via SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.GCP_HOST }}
-          username: ${{ secrets.GCP_USERNAME }}
-          key: ${{ secrets.GCP_SSH_KEY }}
-          port: 22
-          script: |
+      - name: Deploy to Google Cloud via SSH
+        env:
+          GCP_HOST: ${{ secrets.GCP_HOST }}
+          GCP_USER: ${{ secrets.GCP_USERNAME }}
+          GCP_SSH_KEY: ${{ secrets.GCP_SSH_KEY }}
+        run: |
+          if [ -z "$GCP_HOST" ] || [ -z "$GCP_USER" ] || [ -z "$GCP_SSH_KEY" ]; then
+            echo "::error::Thiếu một trong các secret: GCP_HOST, GCP_USERNAME hoặc GCP_SSH_KEY!"
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Ghi private key ra file với định dạng chuẩn
+          printf "%s\n" "$GCP_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+
+          # Kiểm tra xem có đúng là Private Key không
+          if ! grep -q "PRIVATE KEY" ~/.ssh/id_deploy; then
+            echo "::error::GCP_SSH_KEY hiện tại không đúng định dạng Private Key! Có thể bạn đã copy nhầm file .pub (public key) hoặc thiếu dòng -----BEGIN/END OPENSSH PRIVATE KEY-----."
+            exit 1
+          fi
+
+          echo "Đang kết nối SSH tới $GCP_USER@$GCP_HOST..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -i ~/.ssh/id_deploy "$GCP_USER@$GCP_HOST" << 'EOF'
+            set -e
             cd ~/telegram-bot
             chmod +x deploy.sh
             ./deploy.sh
+          EOF

@@ -2,11 +2,11 @@
 set -e
 
 echo "=== [CI/CD] Bắt đầu triển khai code mới ==="
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd ~/telegram-bot
 
-echo "1. Đang kéo mã nguồn mới nhất từ Git..."
-git pull origin main
+echo "1. Đang kéo mã nguồn mới nhất từ GitHub..."
+git fetch origin main
+git reset --hard origin/main
 
 echo "2. Cài đặt / cập nhật các thư viện..."
 pip3 install --user --break-system-packages -r requirements.txt
