@@ -28,13 +28,14 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          # Ghi private key ra file với định dạng chuẩn
           printf "%s\n" "$GCP_SSH_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
 
-          # Kiểm tra xem có đúng là Private Key không
+          echo "Số dòng trong GCP_SSH_KEY: $(wc -l < ~/.ssh/id_deploy)"
+          echo "Dòng đầu tiên bắt đầu bằng: $(head -n 1 ~/.ssh/id_deploy | cut -c 1-15)..."
+
           if ! grep -q "PRIVATE KEY" ~/.ssh/id_deploy; then
-            echo "::error::GCP_SSH_KEY hiện tại không đúng định dạng Private Key! Có thể bạn đã copy nhầm file .pub (public key) hoặc thiếu dòng -----BEGIN/END OPENSSH PRIVATE KEY-----."
+            echo "::error::Khóa bạn dán vào KHÔNG chứa chữ 'PRIVATE KEY'. Vui lòng kiểm tra lại!"
             exit 1
           fi
 
