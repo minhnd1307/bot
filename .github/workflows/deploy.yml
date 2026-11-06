@@ -28,7 +28,6 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          # Ghi private key ra file
           printf "%s\n" "$GCP_SSH_KEY" > ~/.ssh/id_deploy
 
           # Tự động bổ sung header và footer nếu người dùng chỉ copy phần mã base64 ở giữa
@@ -46,7 +45,40 @@ jobs:
           echo "Đang kết nối SSH tới $GCP_USER@$GCP_HOST..."
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 -i ~/.ssh/id_deploy "$GCP_USER@$GCP_HOST" << 'EOF'
             set -e
-            cd ~/telegram-bot
-            chmod +x deploy.sh
-            ./deploy.sh
+
+            # Di chuyển vào thư mục chứa code bot trên máy chủ
+            if [ -d ~/telegram-bot ]; then
+              cd ~/telegram-bot
+            elif [ -d ~/bot ]; then
+              cd ~/bot
+            else
+              echo "❌ Không tìm thấy thư mục bot trên máy chủ!"
+              exit 1
+            fi
+
+            echo "=== [1/4] Kéo mã nguồn mới nhất từ GitHub ==="
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "=== [2/4] Cập nhật thư viện Python ==="
+            pip3 install --user --break-system-packages -r requirements.txt
+
+            echo "=== [3/4] Dừng tiến trình cũ ==="
+            pkill -9 -f run.py || true
+            sleep 1
+
+            echo "=== [4/4] Khởi động lại Bot mới ==="
+            nohup python3 run.py > bot.log 2>&1 &
+
+            sleep 2
+            if pgrep -f "run.py" > /dev/null; then
+              echo "=================================================="
+              echo "🎉 DEPLOY THÀNH CÔNG! Bot đang chạy 24/7!"
+              echo "PID: $(pgrep -f run.py)"
+              echo "=================================================="
+            else
+              echo "❌ Khởi động bot thất bại, log gần nhất:"
+              tail -n 25 bot.log
+              exit 1
+            fi
           EOF
